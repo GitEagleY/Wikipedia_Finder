@@ -7,61 +7,47 @@ MAX_HOPS = 6
 
 def get_links_from_page(url):
     try:
-        # Send a GET request to the provided URL
         response = requests.get(url)
-        # Raise an HTTPError if the response status code is not successful
         response.raise_for_status()
-        # Parse the HTML content of the response using BeautifulSoup
         soup = BeautifulSoup(response.text, 'html.parser')
-        # Find all <a> tags with the 'href' attribute present
         all_links = soup.find_all('a', href=True)
-        # Filter links starting with "/wiki/"
-        filtered_links = []  # Initialize an empty list to store filtered links
-        for link in all_links:  # Iterate over each link in the list of all links
-            if link['href'].startswith("/wiki/"):  # Check if the link starts with "/wiki/"
-                filtered_links.append(link)  # If it does, add the link to the filtered list
-        # Create absolute URLs by joining with base URL
-        absolute_links = []  # Initialize an empty list to store absolute URLs
-        for link in filtered_links:  # Iterate over each filtered link
-            absolute_url = urljoin(url, link['href'])  # Join the base URL with the relative URL to create an absolute URL
-            absolute_links.append(absolute_url)  # Add the absolute URL to the list
-
-        return absolute_links
+        filtered_links = [urljoin(url, link['href']) for link in all_links if link['href'].startswith("/wiki/")]
+        return filtered_links
     except Exception as e:
         print(f"Error getting links from {url}: {e}")
         return []
-
 
 def search_target_page(start_url, target_page):
     hop_buffer = {start_url: MAX_HOPS}  # Temporary buffer to store links and their hop counts
     visited = set()
     
-    while hop_buffer:
-        next_hop_buffer = {}  # Buffer for next hop
-        
-        # Iterate through each link and its remaining hops in the current buffer
-        for link, hops_left in hop_buffer.items():
-            # Mark the current link as visited
-            visited.add(link)
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        while hop_buffer:
+            next_hop_buffer = {}  # Buffer for next hop
             
-            print(f"Hops left for {link}: {hops_left}")
-           
-            if hops_left == 0:
-                continue  # Skip if hops left is 0
+            # Submit tasks to executor for each link in the current hop buffer
+            futures = {executor.submit(get_links_from_page, link): link for link, hops_left in hop_buffer.items()}
 
-            # Get the links from the current page
-            links = get_links_from_page(link)
-            
-            # Check if the target page is found in the links
-            if target_page in links:
-                print(f"Found target page {target_page}!")
-                return [link, target_page]
+            # Process completed tasks
+            for future in futures:
+                link = futures[future]
+                hops_left = hop_buffer[link]
+                visited.add(link)
+                print(f"Hops left for {link}: {hops_left}")
 
-            # Add new links to the next hop buffer if they have not been visited yet
-            for next_link in links:
-                if next_link not in visited:
-                    next_hop_buffer[next_link] = hops_left - 1
+                try:
+                    links = future.result()  # Get result of the task (list of links)
+                    if target_page in links:
+                        print(f"Found target page {target_page}!")
+                        executor.shutdown(wait=False)
+                        return [link, target_page]
+                    for next_link in links:
+                        if next_link not in visited:
+                            next_hop_buffer[next_link] = hops_left - 1
+                except Exception as e:
+                    print(f"Error processing link {link}: {e}")
 
+            hop_buffer = next_hop_buffer  # Update hop_buffer with new links
 
     print("Target Wikipedia page not found within 6 hops.")
     return None
